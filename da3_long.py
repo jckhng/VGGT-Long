@@ -233,14 +233,14 @@ class VGGT_Long:
 
         # Extrinsics, shape (N,4,4) -> VGGT (B,S,4,4)
         if da3_pred.extrinsics is not None:
-            extrinsics = da3_pred.extrinsics
+            extrinsics = torch.from_numpy(da3_pred.extrinsics).float()
             # extrinsics = extrinsics.unsqueeze(0)  # (1,N,4,4)
             vggt_pred['extrinsics'] = extrinsics  # optional: rename or map accordingly depending on VGGT key usage
 
         # Intrinsics
         if da3_pred.intrinsics is not None:
-            intrinsics = da3_pred.intrinsics
-            # intrinsics = intrinsics.uxnsqueeze(0)  # (1,N,3,3)
+            intrinsics = torch.from_numpy(da3_pred.intrinsics).float()
+            # intrinsics = intrinsics.unsqueeze(0)  # (1,N,3,3)
             vggt_pred['intrinsics'] = intrinsics
 
         # Processed images (N,H,W,3) -> (B,S,3,H,W)
@@ -344,7 +344,11 @@ class VGGT_Long:
             self.all_camera_poses.append((chunk_range, extrinsics))
             self.all_camera_intrinsics.append((chunk_range, intrinsics))
 
-        world_points = unproject_depth_map_to_point_map(predictions["depth"], predictions["extrinsics"], predictions["intrinsics"])
+        world_points = unproject_depth_map_to_point_map(
+            predictions["depth"].cpu().numpy() if isinstance(predictions["depth"], torch.Tensor) else predictions["depth"],
+            predictions["extrinsics"].cpu().numpy() if isinstance(predictions["extrinsics"], torch.Tensor) else predictions["extrinsics"],
+            predictions["intrinsics"].cpu().numpy() if isinstance(predictions["intrinsics"], torch.Tensor) else predictions["intrinsics"]
+        )
         predictions["world_points"] = world_points
 
         np.save(save_path, predictions)
@@ -404,32 +408,12 @@ class VGGT_Long:
             conf2 = chunk_data2['world_points_conf'][:self.overlap]
 
             conf_threshold = min(np.median(conf1), np.median(conf2)) * 0.1
-
-            scale_factor = None
-            if self.config['Model']['align_method'] == 'scale+se3':
-
-                chunk1_depth = np.squeeze(chunk_data1['depth'][-self.overlap:])
-                chunk2_depth = np.squeeze(chunk_data2['depth'][:self.overlap])
-                chunk1_depth_conf = np.squeeze(chunk_data1['depth_conf'][-self.overlap:])
-                chunk2_depth_conf = np.squeeze(chunk_data2['depth_conf'][:self.overlap])
-
-                scale_factor_return, quality_score, method_used = precompute_scale_chunks_with_depth(
-                                                                chunk1_depth, 
-                                                                chunk1_depth_conf, 
-                                                                chunk2_depth, 
-                                                                chunk2_depth_conf, 
-                                                                method=self.config['Model']['scale_compute_method']
-                                                            )
-                print(f'[Depth Scale Precompute] scale: {scale_factor_return}, quality_score: {quality_score}, method_used: {method_used}')
-                scale_factor = scale_factor_return
-
             s, R, t = weighted_align_point_maps(point_map1, 
                                                 conf1, 
                                                 point_map2, 
                                                 conf2, 
                                                 conf_threshold=conf_threshold,
-                                                config=self.config,
-                                                precompute_scale=scale_factor)
+                                                config=self.config)
             print("Estimated Scale:", s)
             print("Estimated Rotation:\n", R)
             print("Estimated Translation:", t)
@@ -458,33 +442,12 @@ class VGGT_Long:
                 conf_a = chunk_data_a['world_points_conf'][chunk_a_rela_begin:chunk_a_rela_end]
             
                 conf_threshold = min(np.median(conf_a), np.median(conf_loop)) * 0.1
-
-                scale_factor_a = None
-                if self.config['Model']['align_method'] == 'scale+se3':
-
-                    chunk_a_depth = np.squeeze(chunk_data_a['depth'][chunk_a_rela_begin:chunk_a_rela_end])
-                    chunk_a_depth_conf = np.squeeze(chunk_data_a['depth_conf'][chunk_a_rela_begin:chunk_a_rela_end])
-
-                    chunk_loop_depth = np.squeeze(item[1]['depth'][:chunk_a_range[1] - chunk_a_range[0]])
-                    chunk_loop_depth_conf = np.squeeze(item[1]['depth_conf'][:chunk_a_range[1] - chunk_a_range[0]])
-
-                    scale_factor_return_a, quality_score, method_used = precompute_scale_chunks_with_depth(
-                                                                    chunk_a_depth, 
-                                                                    chunk_a_depth_conf, 
-                                                                    chunk_loop_depth, 
-                                                                    chunk_loop_depth_conf, 
-                                                                    method=self.config['Model']['scale_compute_method']
-                                                                )
-                    print(f'[Depth Scale Precompute] scale: {scale_factor_return}, quality_score: {quality_score}, method_used: {method_used}')
-                    scale_factor_a = scale_factor_return_a
-
                 s_a, R_a, t_a = weighted_align_point_maps(point_map_a, 
                                                           conf_a, 
                                                           point_map_loop, 
                                                           conf_loop, 
                                                           conf_threshold=conf_threshold,
-                                                          config=self.config,
-                                                          precompute_scale=scale_factor_a)
+                                                          config=self.config)
                 print("Estimated Scale:", s_a)
                 print("Estimated Rotation:\n", R_a)
                 print("Estimated Translation:", t_a)
@@ -503,33 +466,12 @@ class VGGT_Long:
                 conf_b = chunk_data_b['world_points_conf'][chunk_b_rela_begin:chunk_b_rela_end]
             
                 conf_threshold = min(np.median(conf_b), np.median(conf_loop)) * 0.1
-
-                scale_factor_b = None
-                if self.config['Model']['align_method'] == 'scale+se3':
-
-                    chunk_b_depth = np.squeeze(chunk_data_b['depth'][chunk_b_rela_begin:chunk_b_rela_end])
-                    chunk_b_depth_conf = np.squeeze(chunk_data_b['depth_conf'][chunk_b_rela_begin:chunk_b_rela_end])
-
-                    chunk_loop_depth = np.squeeze(item[1]['depth'][-chunk_b_range[1] + chunk_b_range[0]:])
-                    chunk_loop_depth_conf = np.squeeze(item[1]['depth_conf'][-chunk_b_range[1] + chunk_b_range[0]:])
-
-                    scale_factor_return_b, quality_score, method_used = precompute_scale_chunks_with_depth(
-                                                                    chunk_b_depth, 
-                                                                    chunk_b_depth_conf, 
-                                                                    chunk_loop_depth, 
-                                                                    chunk_loop_depth_conf, 
-                                                                    method=self.config['Model']['scale_compute_method']
-                                                                )
-                    print(f'[Depth Scale Precompute] scale: {scale_factor_return}, quality_score: {quality_score}, method_used: {method_used}')
-                    scale_factor_b = scale_factor_return_b
-
                 s_b, R_b, t_b = weighted_align_point_maps(point_map_b, 
                                                           conf_b, 
                                                           point_map_loop, 
                                                           conf_loop, 
                                                           conf_threshold=conf_threshold,
-                                                          config=self.config,
-                                                          precompute_scale=scale_factor_b)
+                                                          config=self.config)
                 print("Estimated Scale:", s_b)
                 print("Estimated Rotation:\n", R_b)
                 print("Estimated Translation:", t_b)
@@ -561,7 +503,7 @@ class VGGT_Long:
             plt.plot(x1, y1, 'o-', label='After Optimization')
             for i, j, _ in self.loop_sim3_list:
                 plt.plot([x0[i], x0[j]], [y0[i], y0[j]], 'r--', alpha=0.25, label='Loop (Before)' if i == 5 else "")
-                plt.plot([x1[i], x1[j]], [y1[i], y1[j]], 'g-', alpha=0.25, label='Loop (After)' if i == 5 else "")
+                plt.plot([x1[i], x1[j]], [y1[i], y1[j]], 'g-', alpha=0.35, label='Loop (After)' if i == 5 else "")
             plt.gca().set_aspect('equal')
             plt.title("Sim3 Loop Closure Optimization")
             plt.xlabel("x")
@@ -593,7 +535,9 @@ class VGGT_Long:
             aligned_chunk_data = np.load(os.path.join(self.result_aligned_dir, f"chunk_{chunk_idx}.npy"), allow_pickle=True).item() if chunk_idx > 0 else chunk_data_first
             
             points = aligned_chunk_data['world_points'].reshape(-1, 3)
-            colors = (aligned_chunk_data['images'].transpose(0, 2, 3, 1).reshape(-1, 3) * 255).astype(np.uint8)
+            images = aligned_chunk_data['images']
+            images = images.transpose(0, 2, 3, 1).reshape(-1, 3)
+            colors = np.clip(images, 0, 255).astype(np.uint8)
             confs = aligned_chunk_data['world_points_conf'].reshape(-1)
             ply_path = os.path.join(self.pcd_dir, f'{chunk_idx}_pcd.ply')
             save_confident_pointcloud_batch(
@@ -894,7 +838,7 @@ if __name__ == '__main__':
         print(f'The exp will be saved under dir: {save_dir}')
         copy_file(args.config, save_dir)
 
-    if config['Model']['align_lib'] == 'numba':
+    if config['Model']['align_method'] == 'numba':
         warmup_numba()
 
     vggt_long = VGGT_Long(image_dir, save_dir, config)
